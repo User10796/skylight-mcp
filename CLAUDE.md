@@ -42,16 +42,16 @@ npm run generate:types # Generate TypeScript types from OpenAPI spec
 
 Two methods supported (validated via Zod refinement in `config.ts`):
 
-1. **Email/Password** (recommended): Set `SKYLIGHT_EMAIL` and `SKYLIGHT_PASSWORD`. Server auto-logs in via POST /api/sessions and uses `Basic base64(userId:token)` format for subsequent requests.
+1. **Email/Password** (recommended): Set `SKYLIGHT_EMAIL` and `SKYLIGHT_PASSWORD`. Server logs in via the Rails form + OAuth code flow (`/auth/session/new` → `/auth/session` → `/oauth/authorize` → `/oauth/token`, client_id `skylight-mobile`) and sends `Authorization: Bearer <token>` plus `skylight-api-version`. On 401 it refreshes the token, then falls back to a full login.
 2. **Manual Token**: Set `SKYLIGHT_TOKEN` and optionally `SKYLIGHT_AUTH_TYPE` (bearer/basic).
 
 Both require `SKYLIGHT_FRAME_ID` (household identifier from API URLs like `/api/frames/{frameId}/chores`).
 
-**Note**: The Skylight API uses Basic auth with the format `Basic base64(userId:token)`, not Bearer tokens.
+**Note**: The legacy `POST /api/sessions` login (and its `Basic base64(userId:token)` format) is retired — it returns "This version of Skylight is no longer supported".
 
 ## Plus Subscription
 
-Some features require a Skylight Plus subscription. The server detects subscription status from the login response (`subscription_status: "plus"`). Plus-only tools are not registered for non-Plus users.
+Some features require a Skylight Plus subscription. The OAuth login doesn't report the subscription, so the server probes `GET /rewards` at startup (override with `SKYLIGHT_PLUS=true|false`). Plus-only tools are not registered for non-Plus users.
 
 **Plus-only domains**: Rewards, Meals, Photos
 
@@ -104,7 +104,7 @@ The release workflow (`.github/workflows/release.yml`) will:
 ## API Quirks
 
 - **Calendar date_max is exclusive**: When querying calendar events, `date_max` is treated as exclusive. The code adds 1 day to include events on the end date.
-- **Auth format**: API expects `Basic base64(userId:token)`, not Bearer tokens.
+- **Auth format**: API expects `Authorization: Bearer <oauth token>` and a `skylight-api-version` header (default `2026-03-01`). Empty response bodies (deletes) are normal.
 - **Recurring chores are expanded into instances**: `GET /chores` returns one item per occurrence with IDs like `55780859-2025-12-29-0600`; `attributes.group` is the series ID and `recurrence_set` is an array of RRULE strings.
 - **Deleting a series**: `DELETE /chores/{instanceId}?apply_to=all` removes every occurrence (captured from the app). Only `all` has been observed; other `apply_to` values are unverified.
 - **Ending a series**: the app writes `UNTIL=<local 23:59:59 as UTC>` into the RRULE (e.g. `UNTIL=20260106T045959Z`).

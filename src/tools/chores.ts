@@ -337,7 +337,7 @@ Returns: The updated chore details.`,
           content: [
             {
               type: "text" as const,
-              text: `Updated chore: "${chore.attributes.summary}"${statusText}`,
+              text: `Updated chore: "${chore?.attributes?.summary ?? summary ?? choreId}"${statusText}`,
             },
           ],
         };

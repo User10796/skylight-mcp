@@ -4,8 +4,6 @@ import type {
   ChoreResponse,
   ChoreResource,
   CategoryResource,
-  CreateChoreRequest,
-  UpdateChoreRequest,
 } from "../types.js";
 
 export interface GetChoresOptions {
@@ -59,45 +57,26 @@ export interface CreateChoreOptions {
 }
 
 /**
- * Create a new chore
+ * Create a new chore.
+ *
+ * Uses POST /chores/create_multiple with a flat body (what the Skylight app
+ * sends; the old JSON:API POST /chores returns HTTP 422 — upstream issue #25).
  */
 export async function createChore(options: CreateChoreOptions): Promise<ChoreResource> {
-  const client = getClient();
-
-  const request: CreateChoreRequest = {
-    data: {
-      type: "chore",
-      attributes: {
-        summary: options.summary,
-        start: options.start,
-        start_time: options.startTime ?? null,
-        status: options.status ?? "pending",
-        recurring: options.recurring ?? false,
-        recurrence_set: options.recurrenceSet ?? null,
-        reward_points: options.rewardPoints ?? null,
-        emoji_icon: options.emojiIcon ?? null,
-      },
-    },
-  };
-
-  // Add category relationship if provided
-  if (options.categoryId) {
-    request.data.relationships = {
-      category: {
-        data: {
-          type: "category",
-          id: options.categoryId,
-        },
-      },
-    };
+  const rules = options.recurring && options.recurrenceSet ? [options.recurrenceSet] : null;
+  const created = await createChoreSeries({
+    summary: options.summary,
+    start: options.start,
+    startTime: options.startTime ?? null,
+    categoryIds: options.categoryId ? [options.categoryId] : [],
+    recurrenceSet: rules,
+    rewardPoints: options.rewardPoints ?? null,
+    emojiIcon: options.emojiIcon ?? null,
+  });
+  if (!created[0]) {
+    throw new Error("Failed to create chore: no data returned from API");
   }
-
-  const response = await client.post<ChoreResponse>(
-    "/api/frames/{frameId}/chores",
-    request
-  );
-
-  return response.data;
+  return created[0];
 }
 
 export interface UpdateChoreOptions {
@@ -121,40 +100,29 @@ export async function updateChore(
 ): Promise<ChoreResource> {
   const client = getClient();
 
-  const request: UpdateChoreRequest = {
-    data: {
-      type: "chore",
-      attributes: {},
-    },
-  };
-
-  // Map options to attributes
-  if (options.summary !== undefined) request.data.attributes.summary = options.summary;
-  if (options.start !== undefined) request.data.attributes.start = options.start;
-  if (options.startTime !== undefined) request.data.attributes.start_time = options.startTime;
-  if (options.status !== undefined) request.data.attributes.status = options.status;
-  if (options.recurring !== undefined) request.data.attributes.recurring = options.recurring;
-  if (options.recurrenceSet !== undefined) request.data.attributes.recurrence_set = options.recurrenceSet;
-  if (options.rewardPoints !== undefined) request.data.attributes.reward_points = options.rewardPoints;
-  if (options.emojiIcon !== undefined) request.data.attributes.emoji_icon = options.emojiIcon;
-
-  // Handle category relationship
+  // Flat body, matching what the Skylight app sends for chore updates
+  const body: Record<string, unknown> = {};
+  if (options.summary !== undefined) body.summary = options.summary;
+  if (options.start !== undefined) body.start = options.start;
+  if (options.startTime !== undefined) body.start_time = options.startTime;
+  if (options.status !== undefined) body.status = options.status;
+  if (options.recurring !== undefined) body.recurring = options.recurring;
+  if (options.recurrenceSet !== undefined) {
+    body.recurrence_set = options.recurrenceSet === null ? null : [options.recurrenceSet];
+  }
+  if (options.rewardPoints !== undefined) body.reward_points = options.rewardPoints;
+  if (options.emojiIcon !== undefined) body.emoji_icon = options.emojiIcon;
   if (options.categoryId !== undefined) {
-    if (options.categoryId === null) {
-      request.data.relationships = { category: { data: null } };
-    } else {
-      request.data.relationships = {
-        category: { data: { type: "category", id: options.categoryId } },
-      };
-    }
+    body.category_id = options.categoryId;
+    body.category_ids = options.categoryId === null ? [] : [options.categoryId];
   }
 
   const response = await client.request<ChoreResponse>(
     `/api/frames/{frameId}/chores/${choreId}`,
-    { method: "PUT", body: request }
+    { method: "PUT", body }
   );
 
-  return response.data;
+  return response?.data;
 }
 
 /**

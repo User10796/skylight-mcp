@@ -91,7 +91,7 @@ The MCP server supports two authentication methods:
 
 ### Option 1: Email/Password (Recommended)
 
-Use your Skylight account credentials. The server will automatically log in and manage tokens.
+Use your Skylight account credentials. The server logs in through Skylight's OAuth flow (the same one the mobile app uses), then refreshes tokens automatically.
 
 ```env
 SKYLIGHT_EMAIL=your_email@example.com
@@ -113,10 +113,12 @@ SKYLIGHT_AUTH_TYPE=bearer
 
 You still need to find your frame ID (the household identifier):
 
-1. Use a proxy tool ([Proxyman](https://proxyman.io/), [Charles](https://www.charlesproxy.com/), or [mitmproxy](https://mitmproxy.org/))
-2. Capture any API request from the Skylight app
+1. Sign in to the Skylight web app in Chrome and open DevTools (Cmd+Option+I) → **Network**
+2. Open Chores (or any page) and filter requests by `frames`
 3. Look at the URL path: `/api/frames/{frameId}/...`
 4. Example: `/api/frames/abc123/chores` → frame ID is `abc123`
+
+(A proxy tool such as Proxyman or mitmproxy on the mobile app works too.)
 
 ## Configuration
 
@@ -128,6 +130,9 @@ You still need to find your frame ID (the household identifier):
 | `SKYLIGHT_AUTH_TYPE` | No | `bearer` (default) or `basic` (for manual token) |
 | `SKYLIGHT_FRAME_ID` | Yes | Your household frame ID |
 | `SKYLIGHT_TIMEZONE` | No | Default timezone (default: `America/New_York`) |
+| `SKYLIGHT_PLUS` | No | `true`/`false` to force Plus-only tools on/off (default: auto-detect) |
+| `SKYLIGHT_API_VERSION` | No | `skylight-api-version` header value (default: `2026-03-01`) |
+| `SKYLIGHT_DEVICE_FINGERPRINT` | No | Stable device ID for OAuth (default: derived from your email) |
 
 ### Example .env file:
 

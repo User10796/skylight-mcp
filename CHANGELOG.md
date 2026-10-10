@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Login**: Skylight retired `POST /api/sessions` (it now returns "This version of Skylight is no longer supported"). Email/password login now uses the Rails form + OAuth code flow the mobile app uses, with `Authorization: Bearer` and a `skylight-api-version` header on API calls. Expired tokens are refreshed automatically, falling back to a full login.
+- **Plus detection**: the new login doesn't report the subscription, so Plus is detected by probing the rewards endpoint. Override with `SKYLIGHT_PLUS=true|false`.
+- **create_chore** now uses `POST /chores/create_multiple` (the old endpoint returned HTTP 422; same fix as upstream PR #26). `update_chore` sends the flat body the Skylight app uses.
+- Empty response bodies (e.g. from deletes) no longer cause JSON parse errors.
 - **Chore status**: Skylight reports finished chores as `complete` (lists use `completed`). `get_chores` with `status: "completed"` now returns finished chores, and `update_chore` sends `complete` when marking a chore done.
 
 ## [1.1.7] - 2025-12-30

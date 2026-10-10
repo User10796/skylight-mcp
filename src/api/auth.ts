@@ -1,95 +1,230 @@
 /**
  * Skylight Authentication
- * Handles login via email/password to obtain API token
+ *
+ * Skylight retired the old JSON login (POST /api/sessions now answers
+ * "This version of Skylight is no longer supported"). Current clients log in
+ * through a Rails form + OAuth code flow, the same one the mobile app uses:
+ *
+ *   1. GET  /auth/session/new   -> CSRF authenticity_token + session cookie
+ *   2. POST /auth/session       -> form login (302 = success, 200 = bad creds)
+ *   3. GET  /oauth/authorize    -> 302 with ?code=...
+ *   4. POST /oauth/token        -> access_token (+ refresh_token)
+ *
+ * API calls then use `Authorization: Bearer <access_token>` plus a
+ * `skylight-api-version` header.
  */
+
+import { createHash } from "node:crypto";
 
 const BASE_URL = "https://app.ourskylight.com";
 
-export interface LoginResponse {
-  data: {
-    id: string;
-    type: "authenticated_user";
-    attributes: {
-      email: string;
-      token: string;
-      subscription_status: string;
-    };
-  };
-  meta?: {
-    password_reset?: boolean;
-  };
-}
+const BROWSER_USER_AGENT =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+const BROWSER_ACCEPT = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
+const CLIENT_ID = "skylight-mobile";
+const SCOPE = "everything";
+const REDIRECT_URI = "https://ourskylight.com/welcome";
 
 export interface AuthResult {
-  userId: string;
   email: string;
-  token: string;
-  subscriptionStatus: string;
+  accessToken: string;
+  refreshToken: string | null;
+  /** Seconds until the access token expires, if the server says */
+  expiresIn: number | null;
 }
 
 /**
- * Login to Skylight with email and password
- * Returns the authentication token and user info
+ * Stable per-account device fingerprint (UUID-shaped). Skylight ties refresh
+ * tokens to it, so it must not change between restarts. Derived from the email
+ * unless SKYLIGHT_DEVICE_FINGERPRINT is set.
+ */
+export function deviceFingerprint(email: string): string {
+  const override = process.env.SKYLIGHT_DEVICE_FINGERPRINT;
+  if (override) return override;
+  const hex = createHash("sha256").update(`skylight-mcp:${email.toLowerCase()}`).digest("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
+/** Minimal cookie jar so the Rails session survives across the login steps. */
+class CookieJar {
+  private cookies = new Map<string, string>();
+
+  store(response: Response): void {
+    const headers = response.headers as Headers & { getSetCookie?: () => string[] };
+    const setCookies =
+      typeof headers.getSetCookie === "function"
+        ? headers.getSetCookie()
+        : splitSetCookie(response.headers.get("set-cookie"));
+    for (const cookie of setCookies) {
+      const [pair] = cookie.split(";");
+      const eq = pair.indexOf("=");
+      if (eq > 0) this.cookies.set(pair.slice(0, eq).trim(), pair.slice(eq + 1).trim());
+    }
+  }
+
+  header(): string {
+    return [...this.cookies].map(([k, v]) => `${k}=${v}`).join("; ");
+  }
+}
+
+function splitSetCookie(value: string | null): string[] {
+  // Fallback for runtimes without Headers.getSetCookie(): split on commas that
+  // start a new "name=" pair (Expires dates also contain commas).
+  return value ? value.split(/,(?=\s*[^;,\s]+=)/) : [];
+}
+
+async function step(
+  jar: CookieJar,
+  url: string,
+  init: RequestInit & { headers?: Record<string, string> } = {}
+): Promise<Response> {
+  const response = await fetch(url, {
+    ...init,
+    redirect: "manual",
+    headers: {
+      "User-Agent": BROWSER_USER_AGENT,
+      Accept: BROWSER_ACCEPT,
+      Cookie: jar.header(),
+      ...(init.headers ?? {}),
+    },
+  });
+  jar.store(response);
+  return response;
+}
+
+function extractCsrfToken(html: string): string | null {
+  const input = html.match(/name="authenticity_token"[^>]*value="([^"]+)"/) ??
+    html.match(/value="([^"]+)"[^>]*name="authenticity_token"/);
+  if (input) return decodeEntities(input[1]);
+  const meta = html.match(/<meta[^>]*name="csrf-token"[^>]*content="([^"]+)"/);
+  return meta ? decodeEntities(meta[1]) : null;
+}
+
+function decodeEntities(value: string): string {
+  return value
+    .replace(/&#x2B;|&#43;/gi, "+")
+    .replace(/&#x2F;|&#47;/gi, "/")
+    .replace(/&#x3D;|&#61;/gi, "=")
+    .replace(/&amp;/g, "&");
+}
+
+/**
+ * Log in with email/password and obtain an OAuth access token.
  */
 export async function login(email: string, password: string): Promise<AuthResult> {
-  console.error(`[auth] Attempting login for ${email}...`);
+  console.error(`[auth] Logging in as ${email}...`);
+  const jar = new CookieJar();
+  const fingerprint = deviceFingerprint(email);
 
-  const response = await fetch(`${BASE_URL}/api/sessions`, {
+  // 1. Login page -> CSRF token
+  const page = await step(jar, `${BASE_URL}/auth/session/new`);
+  if (page.status !== 200) {
+    throw new Error(`Login failed: could not load Skylight login page (HTTP ${page.status}).`);
+  }
+  const csrf = extractCsrfToken(await page.text());
+  if (!csrf) {
+    throw new Error("Login failed: Skylight's login page has changed (no CSRF token found).");
+  }
+
+  // 2. Submit the login form
+  const form = await step(jar, `${BASE_URL}/auth/session`, {
     method: "POST",
+    body: new URLSearchParams({ authenticity_token: csrf, email, password }).toString(),
     headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json",
+      "Content-Type": "application/x-www-form-urlencoded",
+      Origin: BASE_URL,
+      Referer: `${BASE_URL}/auth/session/new`,
     },
-    body: JSON.stringify({ email, password }),
   });
+  if (form.status === 200) {
+    throw new Error(
+      "Invalid email or password. Please check your SKYLIGHT_EMAIL and SKYLIGHT_PASSWORD environment variables."
+    );
+  }
+  if (form.status !== 302 && form.status !== 303) {
+    throw new Error(`Login failed: unexpected HTTP ${form.status} from Skylight's login form.`);
+  }
+  // Rejected credentials redirect straight back to the sign-in page
+  if ((form.headers.get("location") ?? "").includes("/auth/session/new")) {
+    throw new Error(
+      "Invalid email or password. Please check your SKYLIGHT_EMAIL and SKYLIGHT_PASSWORD environment variables."
+    );
+  }
 
-  console.error(`[auth] Login response status: ${response.status}`);
+  // 3. Authorize -> code
+  const authorizeUrl =
+    `${BASE_URL}/oauth/authorize?` +
+    new URLSearchParams({
+      client_id: CLIENT_ID,
+      response_type: "code",
+      redirect_uri: REDIRECT_URI,
+      scope: SCOPE,
+      skylight_api_client_device_fingerprint: fingerprint,
+    }).toString();
+  const authorize = await step(jar, authorizeUrl);
+  const location = authorize.headers.get("location") ?? "";
+  const code = location ? new URL(location, BASE_URL).searchParams.get("code") : null;
+  if (!code) {
+    if (location.includes("/auth/session")) {
+      throw new Error(
+        "Login did not complete: Skylight sent us back to the sign-in page. Check your credentials, " +
+          "or sign in once at app.ourskylight.com in case the account needs verification."
+      );
+    }
+    throw new Error(`Login failed: no authorization code from Skylight (HTTP ${authorize.status}).`);
+  }
 
+  // 4. Exchange code -> token
+  const token = await requestToken({
+    grant_type: "authorization_code",
+    code,
+    client_id: CLIENT_ID,
+    redirect_uri: REDIRECT_URI,
+    scope: SCOPE,
+    skylight_api_client_device_fingerprint: fingerprint,
+  });
+  console.error("[auth] Login successful");
+  return { email, ...token };
+}
+
+/**
+ * Exchange a refresh token for a new access token.
+ */
+export async function refreshLogin(email: string, refreshToken: string): Promise<AuthResult> {
+  const token = await requestToken({
+    grant_type: "refresh_token",
+    refresh_token: refreshToken,
+    client_id: CLIENT_ID,
+    skylight_api_client_device_fingerprint: deviceFingerprint(email),
+  });
+  return { email, ...token, refreshToken: token.refreshToken ?? refreshToken };
+}
+
+async function requestToken(
+  params: Record<string, string>
+): Promise<Omit<AuthResult, "email">> {
+  const response = await fetch(`${BASE_URL}/oauth/token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+    body: new URLSearchParams(params).toString(),
+  });
+  const text = await response.text();
   if (!response.ok) {
-    let errorBody = "";
-    try {
-      errorBody = await response.text();
-      console.error(`[auth] Login error response: ${errorBody}`);
-    } catch {
-      // ignore
-    }
-
-    if (response.status === 401) {
-      throw new Error(`Invalid email or password. Please check your SKYLIGHT_EMAIL and SKYLIGHT_PASSWORD environment variables.`);
-    }
-    throw new Error(`Login failed: HTTP ${response.status}${errorBody ? ` - ${errorBody}` : ""}`);
+    throw new Error(`Login failed: token exchange returned HTTP ${response.status}: ${text.slice(0, 200)}`);
   }
-
-  const data = (await response.json()) as LoginResponse;
-
-  console.error(`[auth] Login successful, token prefix: ${data.data.attributes.token.substring(0, 10)}...`);
-
+  let payload: { access_token?: string; refresh_token?: string; expires_in?: number | string };
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    throw new Error("Login failed: Skylight's token response was not JSON.");
+  }
+  if (!payload.access_token) {
+    throw new Error("Login failed: Skylight's token response had no access token.");
+  }
+  const expires = payload.expires_in == null ? null : Number(payload.expires_in);
   return {
-    userId: data.data.id,
-    email: data.data.attributes.email,
-    token: data.data.attributes.token,
-    subscriptionStatus: data.data.attributes.subscription_status,
+    accessToken: payload.access_token,
+    refreshToken: payload.refresh_token ?? null,
+    expiresIn: Number.isFinite(expires) ? expires : null,
   };
-}
-
-// Cache for auth result
-let cachedAuth: AuthResult | null = null;
-
-/**
- * Get cached auth result or login if needed
- */
-export async function getAuth(email: string, password: string): Promise<AuthResult> {
-  if (cachedAuth) {
-    return cachedAuth;
-  }
-
-  cachedAuth = await login(email, password);
-  return cachedAuth;
-}
-
-/**
- * Clear cached auth (for re-login)
- */
-export function clearAuthCache(): void {
-  cachedAuth = null;
 }
