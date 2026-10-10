@@ -59,7 +59,12 @@ Returns chores with their assignees, due dates, and completion status.`,
         let chores = result.chores;
 
         // Filter by status
-        if (status !== "all") {
+        // Skylight reports finished chores as "complete" (lists use "completed")
+        if (status === "completed") {
+          chores = chores.filter(
+            (chore) => chore.attributes.status === "complete" || chore.attributes.status === "completed"
+          );
+        } else if (status !== "all") {
           chores = chores.filter((chore) => chore.attributes.status === status);
         }
 
@@ -298,7 +303,8 @@ Returns: The updated chore details.`,
         const updates: Parameters<typeof updateChore>[1] = {};
 
         if (summary !== undefined) updates.summary = summary;
-        if (status !== undefined) updates.status = status;
+        // Skylight's chore API uses "complete" for finished chores
+        if (status !== undefined) updates.status = status === "completed" ? "complete" : status;
         if (date !== undefined) updates.start = parseDate(date, config.timezone);
         if (time !== undefined) updates.startTime = time ? parseTime(time) : null;
         if (rewardPoints !== undefined) updates.rewardPoints = rewardPoints;
@@ -356,7 +362,8 @@ Use this when:
 Parameters:
 - choreId (required): ID of the chore to delete (from get_chores)
 
-Note: This permanently removes the chore. For recurring chores, this may only delete one instance.`,
+Note: This permanently removes the chore. For repeating chores or rotations,
+use delete_chore_series instead — it removes the whole series in one step.`,
     {
       choreId: z.string().describe("ID of the chore to delete"),
     },

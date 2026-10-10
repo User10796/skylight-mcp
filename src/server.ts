@@ -5,6 +5,7 @@ import { loadConfig } from "./config.js";
 import { initializeClient } from "./api/client.js";
 import { registerCalendarTools } from "./tools/calendar.js";
 import { registerChoreTools } from "./tools/chores.js";
+import { registerChoreSeriesTools } from "./tools/chore-series.js";
 import { registerListTools } from "./tools/lists.js";
 import { registerTaskTools } from "./tools/tasks.js";
 import { registerFamilyTools } from "./tools/family.js";
@@ -34,6 +35,7 @@ export async function createServer(): Promise<{
   // Register base tools (always available)
   registerCalendarTools(server);
   registerChoreTools(server);
+  registerChoreSeriesTools(server);
   registerListTools(server);
   registerTaskTools(server);
   registerFamilyTools(server);

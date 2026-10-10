@@ -166,3 +166,83 @@ export async function deleteChore(choreId: string): Promise<void> {
     method: "DELETE",
   });
 }
+
+// ---------------------------------------------------------------------------
+// Series-aware endpoints
+//
+// These mirror the request shapes the Skylight app itself sends (captured in
+// the skylight-api project): flat JSON bodies, `create_multiple` for creation,
+// and `apply_to=all` on the dated-instance URL to remove a whole series.
+// ---------------------------------------------------------------------------
+
+export interface CreateChoreSeriesOptions {
+  summary: string;
+  start: string;
+  startTime?: string | null;
+  categoryIds: string[];
+  recurrenceSet?: string[] | null;
+  rewardPoints?: number | null;
+  emojiIcon?: string | null;
+}
+
+/**
+ * Create a chore (optionally recurring) the way the Skylight app does:
+ * POST /chores/create_multiple. Returns every chore the server created
+ * (one per assignee).
+ */
+export async function createChoreSeries(options: CreateChoreSeriesOptions): Promise<ChoreResource[]> {
+  const client = getClient();
+  const recurring = Boolean(options.recurrenceSet && options.recurrenceSet.length > 0);
+
+  const body: Record<string, unknown> = {
+    summary: options.summary,
+    start: options.start,
+    start_time: options.startTime ?? null,
+    category_ids: options.categoryIds,
+    recurring,
+    recurrence_set: recurring ? options.recurrenceSet : null,
+    recurring_until: null,
+    routine: false,
+  };
+  if (options.categoryIds.length > 0) body.category_id = options.categoryIds[0];
+  if (options.rewardPoints != null) body.reward_points = options.rewardPoints;
+  if (options.emojiIcon) body.emoji_icon = options.emojiIcon;
+
+  const response = await client.post<{ data: ChoreResource[] | ChoreResource }>(
+    "/api/frames/{frameId}/chores/create_multiple",
+    body
+  );
+
+  const data = response?.data;
+  if (!data) return [];
+  return Array.isArray(data) ? data : [data];
+}
+
+/**
+ * Delete an entire recurring series, given the ID of any one of its dated
+ * instances (e.g. "55780859-2025-12-29-0600"). Uses apply_to=all, which is
+ * what the Skylight app sends for "delete all occurrences".
+ */
+export async function deleteChoreSeries(instanceId: string): Promise<void> {
+  const client = getClient();
+  await client.request(`/api/frames/{frameId}/chores/${encodeURIComponent(instanceId)}`, {
+    method: "DELETE",
+    params: { apply_to: "all" },
+  });
+}
+
+/**
+ * Replace the recurrence rules on a series (by series ID). Used to end a
+ * series on a given date by adding UNTIL to its RRULE, which keeps past
+ * (completed) occurrences intact.
+ */
+export async function updateChoreSeriesRecurrence(
+  seriesId: string,
+  recurrenceSet: string[]
+): Promise<void> {
+  const client = getClient();
+  await client.request(`/api/frames/{frameId}/chores/${encodeURIComponent(seriesId)}`, {
+    method: "PUT",
+    body: { recurring: true, recurrence_set: recurrenceSet },
+  });
+}

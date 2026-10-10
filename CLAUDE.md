@@ -26,7 +26,7 @@ npm run generate:types # Generate TypeScript types from OpenAPI spec
 
 **Two-tier tool system**:
 1. `api/endpoints/*.ts` (11 modules) - Low-level HTTP wrappers for each API resource
-2. `tools/*.ts` (9 modules) - MCP tool definitions with Zod parameter validation
+2. `tools/*.ts` (10 modules) - MCP tool definitions with Zod parameter validation
 
 **Tool Registration**: Each domain exports `registerXxxTools(server)` called from `server.ts`. Plus-only tools are conditionally registered based on subscription status.
 
@@ -36,6 +36,7 @@ npm run generate:types # Generate TypeScript types from OpenAPI spec
 - `api/auth.ts` - Login endpoint for email/password authentication
 - `api/generated-types.ts` - Auto-generated types from OpenAPI spec
 - `utils/dates.ts` - Parses "today", "tomorrow", day names, YYYY-MM-DD
+- `utils/recurrence.ts` - RRULE helpers, rotation planning, grouping chore instances into series
 
 ## Authentication
 
@@ -61,7 +62,7 @@ Some features require a Skylight Plus subscription. The server detects subscript
 | Category | Tools |
 |----------|-------|
 | Calendar | `get_calendar_events`, `get_source_calendars`, `create_calendar_event`, `update_calendar_event`, `delete_calendar_event` |
-| Chores | `get_chores`, `create_chore`, `update_chore`, `delete_chore` |
+| Chores | `get_chores`, `create_chore`, `update_chore`, `delete_chore`, `get_chore_series`, `create_rotating_chore`, `delete_chore_series` |
 | Lists | `get_lists`, `get_list_items`, `create_list`, `update_list`, `delete_list`, `create_list_item`, `update_list_item`, `delete_list_item` |
 | Tasks | `create_task` |
 | Family | `get_family_members`, `get_frame_info`, `get_devices` |
@@ -104,3 +105,8 @@ The release workflow (`.github/workflows/release.yml`) will:
 
 - **Calendar date_max is exclusive**: When querying calendar events, `date_max` is treated as exclusive. The code adds 1 day to include events on the end date.
 - **Auth format**: API expects `Basic base64(userId:token)`, not Bearer tokens.
+- **Recurring chores are expanded into instances**: `GET /chores` returns one item per occurrence with IDs like `55780859-2025-12-29-0600`; `attributes.group` is the series ID and `recurrence_set` is an array of RRULE strings.
+- **Deleting a series**: `DELETE /chores/{instanceId}?apply_to=all` removes every occurrence (captured from the app). Only `all` has been observed; other `apply_to` values are unverified.
+- **Ending a series**: the app writes `UNTIL=<local 23:59:59 as UTC>` into the RRULE (e.g. `UNTIL=20260106T045959Z`).
+- **Chore status** is `complete`, not `completed` (lists use `completed`).
+- **Creating chores**: the app uses `POST /chores/create_multiple` with a flat (non-JSON:API) body and `category_ids`; it returns one chore per assignee.

@@ -6,6 +6,7 @@ An MCP (Model Context Protocol) server for the Skylight Calendar API. Enables AI
 
 - **Calendar**: Query calendar events ("What's on my calendar today?")
 - **Chores**: View and create chores ("Add emptying dishwasher to chores")
+- **Chore rotations & series**: Set up weekly rotations and remove repeating chores in one step ("The boys alternate weeks on dishes", "Delete the trash rotation")
 - **Lists**: View grocery and to-do lists ("What's on the grocery list?")
 - **Tasks**: Add items to the task box ("Add XYZ to my task list")
 - **Family**: View family members and devices
@@ -153,6 +154,11 @@ SKYLIGHT_TIMEZONE=America/New_York
 |------|-------------|
 | `get_chores` | Get chores with optional filters (date, assignee, status) |
 | `create_chore` | Create a new chore with optional recurrence |
+| `update_chore` | Update, complete, or reassign a chore |
+| `delete_chore` | Delete a single chore |
+| `get_chore_series` | List recurring series (one row per series, not per day) and flag hand-copied duplicates |
+| `create_rotating_chore` | Rotate a chore between people by week (e.g. alternate weeks), as a few every-N-weeks series |
+| `delete_chore_series` | Remove a whole series/rotation (and hand-made copies) in one step, or end it as of a date; previews before acting |
 
 ### List Tools
 
@@ -189,6 +195,9 @@ Once configured, you can ask Claude things like:
 - "What's on my calendar today?"
 - "What chores do I need to do this week?"
 - "Add 'take out trash' to my chores for tomorrow"
+- "Cohen and Grayson alternate weeks on dishes, starting Sunday"
+- "What repeating chores do we have?"
+- "Get rid of the dishes rotation" / "Stop the lawn chore after this week"
 - "What's on the grocery list?"
 - "Add milk to my task list"
 - "Who are the family members on Skylight?"

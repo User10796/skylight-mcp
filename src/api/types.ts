@@ -40,11 +40,13 @@ export interface ChoreAttributes {
   is_future: boolean | null;
   recurring: boolean;
   recurring_until: string | null;
-  recurrence_set: string | null;
+  recurrence_set: string | string[] | null;
   reward_points: number | null;
   emoji_icon: string | null;
   routine: boolean | null;
   position: number | null;
+  /** Series ID shared by all instances of a recurring chore */
+  group?: string | number | null;
 }
 
 export interface ChoreRelationships {
