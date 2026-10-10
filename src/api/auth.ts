@@ -14,7 +14,7 @@
  * `skylight-api-version` header.
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 
 const BASE_URL = "https://app.ourskylight.com";
 
@@ -100,6 +100,23 @@ function extractCsrfToken(html: string): string | null {
   return meta ? decodeEntities(meta[1]) : null;
 }
 
+/** Pull a readable message out of an OAuth error page or JSON body. */
+function describeErrorPage(body: string): string {
+  try {
+    const json = JSON.parse(body);
+    return [json.error, json.error_description].filter(Boolean).join(": ") || body.slice(0, 300);
+  } catch {
+    // HTML error page: prefer the error description paragraph, else visible text
+  }
+  const desc = body.match(/<(?:pre|p)[^>]*>([\s\S]*?)<\/(?:pre|p)>/i);
+  const text = (desc ? desc[1] : body)
+    .replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return decodeEntities(text).slice(0, 300) || "(empty response)";
+}
+
 function decodeEntities(value: string): string {
   return value
     .replace(/&#x2B;|&#43;/gi, "+")
@@ -151,7 +168,9 @@ export async function login(email: string, password: string): Promise<AuthResult
     );
   }
 
-  // 3. Authorize -> code
+  // 3. Authorize -> code (with PKCE, which current OAuth servers may require)
+  const codeVerifier = randomBytes(32).toString("base64url");
+  const codeChallenge = createHash("sha256").update(codeVerifier).digest("base64url");
   const authorizeUrl =
     `${BASE_URL}/oauth/authorize?` +
     new URLSearchParams({
@@ -160,6 +179,8 @@ export async function login(email: string, password: string): Promise<AuthResult
       redirect_uri: REDIRECT_URI,
       scope: SCOPE,
       skylight_api_client_device_fingerprint: fingerprint,
+      code_challenge: codeChallenge,
+      code_challenge_method: "S256",
     }).toString();
   const authorize = await step(jar, authorizeUrl);
   const location = authorize.headers.get("location") ?? "";
@@ -171,13 +192,20 @@ export async function login(email: string, password: string): Promise<AuthResult
           "or sign in once at app.ourskylight.com in case the account needs verification."
       );
     }
-    throw new Error(`Login failed: no authorization code from Skylight (HTTP ${authorize.status}).`);
+    const oauthError = location ? new URL(location, BASE_URL).searchParams : null;
+    const detail = oauthError?.get("error")
+      ? `${oauthError.get("error")}: ${oauthError.get("error_description") ?? ""}`
+      : describeErrorPage(await authorize.text());
+    throw new Error(
+      `Login failed: no authorization code from Skylight (HTTP ${authorize.status}). Skylight said: ${detail}`
+    );
   }
 
   // 4. Exchange code -> token
   const token = await requestToken({
     grant_type: "authorization_code",
     code,
+    code_verifier: codeVerifier,
     client_id: CLIENT_ID,
     redirect_uri: REDIRECT_URI,
     scope: SCOPE,

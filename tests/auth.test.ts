@@ -3,6 +3,7 @@
  * mocked fetch that behaves like Skylight's Rails auth endpoints.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { createHash } from "node:crypto";
 import { login, refreshLogin, deviceFingerprint } from "../src/api/auth.js";
 
 interface Call {
@@ -18,6 +19,8 @@ function res(status: number, body = "", headers: Record<string, string> = {}, co
   for (const c of cookies) h.append("set-cookie", c);
   return new Response(status === 204 || status === 302 ? null : body, { status, headers: h });
 }
+
+let challenge: string | null = null;
 
 /** A fake Skylight auth server. `goodPassword` decides whether login succeeds. */
 function fakeSkylight(goodPassword: string) {
@@ -44,13 +47,19 @@ function fakeSkylight(goodPassword: string) {
         : res(302, "", { location: "https://app.ourskylight.com/auth/session/new" });
     }
     if (url.pathname === "/oauth/authorize") {
+      if (url.searchParams.get("client_id") === "reject-me") {
+        return res(400, `<html><body><h1>An error has occurred</h1><p>Client authentication failed due to unknown client.</p></body></html>`);
+      }
+      challenge = url.searchParams.get("code_challenge");
       return headers.Cookie?.includes("_skylight_session=s2")
         ? res(302, "", { location: "https://ourskylight.com/welcome?code=the-code" })
         : res(302, "", { location: "https://app.ourskylight.com/auth/session/new" });
     }
     if (url.pathname === "/oauth/token") {
       const form = new URLSearchParams(body);
-      if (form.get("grant_type") === "authorization_code" && form.get("code") === "the-code") {
+      const verifierOk =
+        !challenge || createHash("sha256").update(form.get("code_verifier") ?? "").digest("base64url") === challenge;
+      if (form.get("grant_type") === "authorization_code" && form.get("code") === "the-code" && verifierOk) {
         return res(200, JSON.stringify({ access_token: "access-1", refresh_token: "refresh-1", expires_in: 7200 }));
       }
       if (form.get("grant_type") === "refresh_token" && form.get("refresh_token") === "refresh-1") {
@@ -96,6 +105,24 @@ describe("login (OAuth flow)", () => {
     expect(auth.get("client_id")).toBe("skylight-mobile");
     expect(auth.get("scope")).toBe("everything");
     expect(auth.get("skylight_api_client_device_fingerprint")).toBe(deviceFingerprint("dad@example.com"));
+    // PKCE: S256 challenge sent, and the matching verifier accepted at /oauth/token
+    expect(auth.get("code_challenge_method")).toBe("S256");
+    expect(new URLSearchParams(calls[3].body).get("code_verifier")).toBeTruthy();
+  });
+
+  it("surfaces Skylight's message when the authorize step fails", async () => {
+    const server = fakeSkylight("right");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string, init?: RequestInit) => {
+        const url = new URL(input);
+        if (url.pathname === "/oauth/authorize") url.searchParams.set("client_id", "reject-me");
+        return server(url.toString(), init);
+      })
+    );
+    await expect(login("dad@example.com", "right")).rejects.toThrow(
+      /HTTP 400\). Skylight said: Client authentication failed due to unknown client\./
+    );
   });
 
   it("reports a wrong password clearly", async () => {
